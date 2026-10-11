@@ -65,7 +65,11 @@ impl DeviceHandle {
                         return device
                             .open()
                             .wait()
-                            .map(|device| (device, strings))
+                            .map(|device| {
+                                let strings =
+                                    fill_missing_strings(strings, || read_device_strings(&device));
+                                (device, strings)
+                            })
                             .map_err(|e| {
                                 info!("Failed to open device: {:?}", e);
                                 RtlsdrError::from_usb(e)
@@ -80,7 +84,11 @@ impl DeviceHandle {
                         return device
                             .open()
                             .wait()
-                            .map(|device| (device, strings))
+                            .map(|device| {
+                                let strings =
+                                    fill_missing_strings(strings, || read_device_strings(&device));
+                                (device, strings)
+                            })
                             .map_err(|e| {
                                 info!("Failed to open device: {:?}", e);
                                 RtlsdrError::from_usb(e)
@@ -265,6 +273,22 @@ fn device_strings(device: &nusb::DeviceInfo) -> UsbStrings {
     )
 }
 
+/// Fill in strings that enumeration did not provide by reading the descriptors.
+///
+/// nusb never reports the manufacturer string from `DeviceInfo` on Windows, so
+/// without this the RTL-SDR Blog V4 check in `RtlSdr::init` always fails there.
+fn fill_missing_strings(cached: UsbStrings, read: impl FnOnce() -> UsbStrings) -> UsbStrings {
+    if cached.0.is_some() && cached.1.is_some() && cached.2.is_some() {
+        return cached;
+    }
+    let read = read();
+    (
+        cached.0.or(read.0),
+        cached.1.or(read.1),
+        cached.2.or(read.2),
+    )
+}
+
 fn read_device_strings(device: &Device) -> UsbStrings {
     let descriptor = device.device_descriptor();
     let language_id = device
@@ -295,5 +319,37 @@ fn read_poll_timeout(timeout: Duration) -> Duration {
         Duration::from_millis(100)
     } else {
         timeout
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    #[test]
+    fn fill_missing_strings_reads_descriptor_when_manufacturer_is_missing() {
+        // What nusb reports on Windows: no manufacturer string.
+        let cached = (None, s("Blog V4"), s("00000001"));
+        let filled = fill_missing_strings(cached, || {
+            (s("RTLSDRBlog"), s("from descriptor"), s("from descriptor"))
+        });
+        assert_eq!(filled, (s("RTLSDRBlog"), s("Blog V4"), s("00000001")));
+    }
+
+    #[test]
+    fn fill_missing_strings_skips_device_io_when_all_strings_are_cached() {
+        let cached = (s("RTLSDRBlog"), s("Blog V4"), s("00000001"));
+        let filled = fill_missing_strings(cached.clone(), || panic!("must not read"));
+        assert_eq!(filled, cached);
+    }
+
+    #[test]
+    fn fill_missing_strings_keeps_none_when_descriptor_read_fails() {
+        let filled = fill_missing_strings((None, s("Blog V4"), None), || (None, None, None));
+        assert_eq!(filled, (None, s("Blog V4"), None));
     }
 }

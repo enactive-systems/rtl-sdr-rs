@@ -9,6 +9,13 @@ readme = "readme.md"
 keywords = ["rtl-sdr", "sdr", "radio"]
 exclude = ["capture.bin"]
 
+# Keep this vendored copy out of the surrounding workspace.
+[workspace]
+
+# Upstream has unused fields; a path dependency does not get the lint cap a registry one does.
+[lints.rust]
+dead_code = "allow"
+
 [features]
 default = []
 rtl_sdr_blog = []
