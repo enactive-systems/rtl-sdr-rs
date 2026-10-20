@@ -177,11 +177,7 @@ impl RtlSdr {
     }
 
     pub fn set_if_freq(&self, freq: u32) -> Result<()> {
-        // Get corrected clock value - start with default
-        let rtl_xtal: u32 = DEF_RTL_XTAL_FREQ;
-        // Apply PPM correction
-        let base = 1u32 << 22;
-        let if_freq: i32 = -(freq as f64 * base as f64 / rtl_xtal as f64) as i32;
+        let if_freq = if_freq_register(freq, self.xtal, self.corr);
 
         let tmp = ((if_freq >> 16) as u16) & 0x3f;
         self.handle.demod_write_reg(1, 0x19, tmp, 1)?;
@@ -206,6 +202,11 @@ impl RtlSdr {
         // Read corrected clock value into tuner
         self.tuner.set_xtal_freq(self.get_tuner_xtal_freq())?;
 
+        // The R82xx tuner and the demodulator use the same corrected reference.
+        // Direct sampling retunes the NCO in set_center_freq below instead.
+        if matches!(self.direct_sampling, DirectSampleMode::Off) {
+            self.set_if_freq(self.tuner.get_if_freq()?)?;
+        }
         // Retune to apply new correction value
         self.set_center_freq(self.freq)?;
         Ok(())
@@ -364,11 +365,11 @@ impl RtlSdr {
 
     #[allow(dead_code)]
     pub fn get_xtal_freq(&self) -> u32 {
-        (self.xtal as f32 * (1.0 + self.corr as f32 / 1e6)) as u32
+        corrected_xtal_freq(self.xtal, self.corr)
     }
 
     pub fn get_tuner_xtal_freq(&self) -> u32 {
-        (self.tuner_xtal as f32 * (1.0 + self.corr as f32 / 1e6)) as u32
+        corrected_xtal_freq(self.tuner_xtal, self.corr)
     }
 
     #[allow(dead_code)]
@@ -494,7 +495,7 @@ impl RtlSdr {
     }
 
     fn set_sample_freq_correction(&self, ppm: i32) -> Result<()> {
-        let offs = (-ppm * 2_i32.pow(24) / 1_000_000) as i16;
+        let offs = sample_freq_correction_offset(ppm);
         self.handle
             .demod_write_reg(1, 0x3f, (offs & 0xff) as u16, 1)?;
         self.handle
@@ -605,5 +606,48 @@ impl RtlSdr {
 
     pub fn get_tuner_id(&self) -> Result<&str> {
         Ok(self.tuner.get_info()?.id)
+    }
+}
+
+fn sample_freq_correction_offset(ppm: i32) -> i16 {
+    (-(ppm as i64) * (1_i64 << 24) / 1_000_000) as i16
+}
+
+#[cfg(test)]
+mod correction_tests {
+    use super::sample_freq_correction_offset;
+
+    #[test]
+    fn ppm_calculation_does_not_overflow_before_division() {
+        for (ppm, expected) in [(0, 0), (3, -50), (-3, 50), (128, -2147), (-128, 2147), (200, -3355), (-200, 3355), (1000, -16777), (-1000, 16777)] {
+            assert_eq!(sample_freq_correction_offset(ppm), expected, "{ppm}");
+        }
+    }
+}
+
+// RTL2832 の IF/NCO レジスタ値。USB 書き込みと分けて数値の回帰を検証する。
+fn corrected_xtal_freq(xtal: u32, ppm: i32) -> u32 {
+    (xtal as f64 * (1.0 + ppm as f64 / 1e6)) as u32
+}
+
+fn if_freq_register(freq: u32, xtal: u32, ppm: i32) -> i32 {
+    -(freq as f64 * (1u32 << 22) as f64 / corrected_xtal_freq(xtal, ppm) as f64) as i32
+}
+
+#[cfg(test)]
+mod if_correction_tests {
+    use super::if_freq_register;
+
+    #[test]
+    fn direct_sampling_nco_uses_corrected_crystal() {
+        assert_eq!(if_freq_register(14_400_000, 28_800_000, 100), -2096942);
+        assert_eq!(if_freq_register(14_400_000, 28_800_000, -100), -2097361);
+        assert_eq!(if_freq_register(14_400_000, 28_800_000, 0), -2097152);
+    }
+
+    #[test]
+    fn tuner_if_nco_uses_corrected_crystal() {
+        assert_eq!(if_freq_register(3_570_000, 28_800_000, 100), -519866);
+        assert_eq!(if_freq_register(3_570_000, 28_800_000, -100), -519970);
     }
 }
