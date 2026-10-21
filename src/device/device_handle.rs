@@ -44,6 +44,7 @@ impl DeviceHandle {
         })
     }
 
+    #[cfg(not(target_os = "android"))]
     fn open_from_usb(selector: UsbSelector) -> Result<(Device, UsbStrings)> {
         let devices = nusb::list_devices().wait().map_err(|e| {
             info!("Failed to get devices: {:?}", e);
@@ -104,6 +105,16 @@ impl DeviceHandle {
         };
 
         Err(RtlsdrErr(msg))
+    }
+
+    /// nusb has no `list_devices` on Android. Devices there are opened with a
+    /// file descriptor from the platform (`DeviceId::Fd`).
+    #[cfg(target_os = "android")]
+    fn open_from_usb(_selector: UsbSelector) -> Result<(Device, UsbStrings)> {
+        Err(RtlsdrErr(
+            "Opening by index or serial is not supported on Android; open with a file descriptor"
+                .to_string(),
+        ))
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]

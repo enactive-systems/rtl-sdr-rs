@@ -16,6 +16,7 @@ pub use async_read::{
 };
 use device::Device;
 use error::{Result, RtlsdrError};
+#[cfg(not(target_os = "android"))]
 use nusb::MaybeFuture;
 use rtlsdr::RtlSdr as Sdr;
 use tuners::r82xx::{R820T_TUNER_ID, R828D_TUNER_ID};
@@ -44,12 +45,21 @@ pub struct DeviceDescriptor {
 }
 
 impl DeviceDescriptors {
+    #[cfg(not(target_os = "android"))]
     pub fn new() -> Result<Self> {
         let list = nusb::list_devices()
             .wait()
             .map_err(RtlsdrError::from_usb)?
             .collect();
         Ok(Self { list })
+    }
+
+    /// nusb has no `list_devices` on Android, where USB devices are reached
+    /// through a file descriptor from the platform (`RtlSdr::open_with_fd`).
+    /// Enumeration finds nothing there.
+    #[cfg(target_os = "android")]
+    pub fn new() -> Result<Self> {
+        Ok(Self { list: Vec::new() })
     }
 
     /// Returns an iterator over the found RTL-SDR devices.
